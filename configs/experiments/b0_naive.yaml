@@ -1,0 +1,19 @@
+# Naive RAG floor baseline: fixed-token chunks, dense retrieval only.
+name: b0_naive
+pipeline: naive_rag
+
+chunker:
+  type: fixed_tokens
+  size: 512
+  overlap: 50
+
+embedder:
+  provider: openai
+  model: text-embedding-3-small
+
+retriever:
+  type: dense
+  top_k: 5
+
+generator:
+  model: gpt-5.4-nano

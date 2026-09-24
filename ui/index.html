@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AAPL 10-Q RAG</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
+  h1 { font-size: 1.3rem; }
+  .sub { color: #666; margin-top: -8px; font-size: 0.9rem; }
+  textarea { width: 100%; min-height: 70px; font-size: 1rem; padding: 10px; box-sizing: border-box; }
+  button { margin-top: 8px; padding: 8px 18px; font-size: 1rem; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .answer { margin-top: 24px; padding: 16px; border: 1px solid #ccc; border-radius: 8px; white-space: pre-wrap; }
+  .sources { margin-top: 16px; }
+  .source { border: 1px solid #ddd; border-radius: 6px; padding: 10px; margin-top: 8px; font-size: 0.9rem; }
+  .source-header { font-weight: 600; margin-bottom: 4px; }
+  .meta { color: #666; font-size: 0.85rem; margin-top: 12px; }
+  .error { color: #b00020; margin-top: 16px; }
+</style>
+</head>
+<body>
+  <h1>AAPL 10-Q RAG</h1>
+  <p class="sub">Ask a question about Apple's 2022 Q3 10-Q filing.</p>
+
+  <textarea id="question" placeholder="e.g. What was Apple's operating income for the three months ended June 25, 2022?"></textarea>
+  <br />
+  <button id="ask">Ask</button>
+
+  <div id="result"></div>
+
+  <script>
+    const askBtn = document.getElementById('ask');
+    const questionEl = document.getElementById('question');
+    const resultEl = document.getElementById('result');
+
+    async function ask() {
+      const question = questionEl.value.trim();
+      if (!question) return;
+
+      askBtn.disabled = true;
+      askBtn.textContent = 'Asking...';
+      resultEl.innerHTML = '';
+
+      try {
+        const resp = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question }),
+        });
+        const data = await resp.json();
+
+        if (!resp.ok) {
+          resultEl.innerHTML = `<div class="error">${data.error || 'Request failed'}</div>`;
+          return;
+        }
+
+        const sourcesHtml = data.sources.map(s => `
+          <div class="source">
+            <div class="source-header">${s.doc_id}.pdf, p.${s.page_start}${s.page_end !== s.page_start ? '-' + s.page_end : ''}</div>
+            <div>${escapeHtml(s.snippet)}</div>
+          </div>
+        `).join('');
+
+        resultEl.innerHTML = `
+          <div class="answer">${escapeHtml(data.answer)}</div>
+          <div class="meta">${data.model} · $${data.cost_usd.toFixed(5)} · ${Math.round(data.latency_ms)}ms</div>
+          <div class="sources"><strong>Sources</strong>${sourcesHtml}</div>
+        `;
+      } catch (e) {
+        resultEl.innerHTML = `<div class="error">${e}</div>`;
+      } finally {
+        askBtn.disabled = false;
+        askBtn.textContent = 'Ask';
+      }
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    askBtn.addEventListener('click', ask);
+    questionEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ask();
+    });
+  </script>
+</body>
+</html>

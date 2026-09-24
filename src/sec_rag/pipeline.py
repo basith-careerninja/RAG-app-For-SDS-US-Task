@@ -1,0 +1,117 @@
+"""Builds a runnable pipeline from an experiment config dict."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Protocol
+
+from sec_rag.doc_catalog import DocCatalog
+from sec_rag.generate.generator import ContextItem, Generator
+from sec_rag.index.embedders.openai_embedder import OpenAIEmbedder
+from sec_rag.index.stores.inmemory import InMemoryVectorStore
+from sec_rag.ingest.chunking.fixed import chunk_document
+from sec_rag.ingest.chunking.section_aware import chunk_document_by_section
+from sec_rag.ingest.parser import parse_pdf
+from sec_rag.ingest.tables import build_table_records
+from sec_rag.retrieve.dense import DenseRetriever
+from sec_rag.retrieve.hybrid import HybridRetriever
+
+DEFAULT_GENERATOR_MODEL = "gpt-5.4-nano"
+
+
+class Pipeline(Protocol):
+    def answer(self, question: str, doc_ids: list[str]):
+        ...
+
+
+class NaiveRagPipeline:
+    """Parse -> chunk -> embed -> retrieve -> generate. Chunker and retriever
+    are picked by config, so the naive floor baseline (fixed-token chunks,
+    dense retrieval) and the section-aware + hybrid version share this class.
+
+    With section_aware chunking, each table gets a short LLM summary
+    embedded for search and its full markdown swapped in as context once
+    that summary is the retrieved hit (multi-vector / parent-document
+    pattern).
+    """
+
+    def __init__(self, config: dict, docs_dir: Path):
+        self.config = config
+        self.catalog = DocCatalog(docs_dir)
+        chunk_cfg = config.get("chunker", {})
+        self.chunker_type = chunk_cfg.get("type", "fixed_tokens")
+        self.chunk_size = chunk_cfg.get("size", 512)
+        self.chunk_overlap = chunk_cfg.get("overlap", 50)
+        self.retriever_type = config.get("retriever", {}).get("type", "dense")
+        self.top_k = config.get("retriever", {}).get("top_k", 5)
+
+        embed_cfg = config.get("embedder", {})
+        self.embedder = OpenAIEmbedder(model=embed_cfg.get("model", "text-embedding-3-small"))
+        self.generator = Generator(model=config.get("generator", {}).get("model", DEFAULT_GENERATOR_MODEL))
+
+        self.store = InMemoryVectorStore()
+        search_texts = self._ingest_corpus()
+
+        if self.retriever_type == "hybrid":
+            self.retriever = HybridRetriever(self.store, self.embedder, search_texts)
+        else:
+            self.retriever = DenseRetriever(self.store, self.embedder)
+
+    def _ingest_corpus(self) -> list[str]:
+        # search_text is what gets embedded/indexed; context_text is what's
+        # handed to the generator -- they only differ for table chunks
+        items: list[tuple[str, str, str, str, int, int]] = []
+
+        for entry in self.catalog.entries:
+            doc = parse_pdf(entry.path, doc_id=entry.doc_id)
+
+            if self.chunker_type == "section_aware":
+                for chunk in chunk_document_by_section(doc, max_tokens=self.chunk_size):
+                    items.append((chunk.chunk_id, chunk.text, chunk.text, chunk.doc_id, chunk.page_start, chunk.page_end))
+
+                table_records, _failures = build_table_records(entry.path)
+                for i, rec in enumerate(table_records):
+                    chunk_id = f"{entry.doc_id}::table_p{rec.page_no}_{i}"
+                    items.append((chunk_id, rec.summary, rec.docling_markdown, entry.doc_id, rec.page_no, rec.page_no))
+            else:
+                for chunk in chunk_document(doc, size=self.chunk_size, overlap=self.chunk_overlap):
+                    items.append((chunk.chunk_id, chunk.text, chunk.text, chunk.doc_id, chunk.page_start, chunk.page_end))
+
+        search_texts = [item[1] for item in items]
+        vectors = self.embedder.embed_many(search_texts)
+        for (chunk_id, _search_text, context_text, doc_id, page_start, page_end), vector in zip(items, vectors):
+            self.store.add(chunk_id, vector, {"text": context_text, "doc_id": doc_id, "page_start": page_start, "page_end": page_end})
+
+        return search_texts
+
+    def answer(self, question: str, doc_ids: list[str]):
+        retrieved = self.retriever.retrieve(question, top_k=self.top_k)
+        context_items = [ContextItem(label=f"{c.doc_id}.pdf, p.{c.page_start}-{c.page_end}", text=c.text) for c in retrieved]
+        answer = self.generator.answer(question, context_items)
+        return answer, retrieved
+
+
+class LongContextOraclePipeline:
+    """No retrieval -- stuffs the full text of the requested filing(s) into the prompt."""
+
+    def __init__(self, config: dict, docs_dir: Path):
+        self.config = config
+        self.catalog = DocCatalog(docs_dir)
+        self.generator = Generator(model=config.get("generator", {}).get("model", DEFAULT_GENERATOR_MODEL))
+
+    def answer(self, question: str, doc_ids: list[str]):
+        context_items = []
+        for doc_id in doc_ids:
+            doc = parse_pdf(self.catalog.path_for(doc_id), doc_id=doc_id)
+            context_items.append(ContextItem(label=f"{doc_id}.pdf", text=doc.full_text))
+        answer = self.generator.answer(question, context_items)
+        return answer, []
+
+
+def build_pipeline(config: dict, docs_dir: Path) -> Pipeline:
+    kind = config["pipeline"]
+    if kind == "naive_rag":
+        return NaiveRagPipeline(config, docs_dir)
+    if kind == "long_context_oracle":
+        return LongContextOraclePipeline(config, docs_dir)
+    raise ValueError(f"Unknown pipeline kind: {kind!r}")

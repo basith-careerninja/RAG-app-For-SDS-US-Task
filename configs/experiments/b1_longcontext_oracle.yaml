@@ -1,0 +1,7 @@
+# Long-context oracle: whole filing in the prompt, no retrieval at all.
+# Ceiling on quality and a cost reference, not the production pipeline.
+name: b1_longcontext_oracle
+pipeline: long_context_oracle
+
+generator:
+  model: gpt-5.4-nano

@@ -1,0 +1,19 @@
+# Section-aware chunking + Docling/Gemini table dual-storage + hybrid
+# dense/BM25 retrieval. This is the config the API serves.
+name: section_hybrid
+pipeline: naive_rag
+
+chunker:
+  type: section_aware
+  size: 512
+
+embedder:
+  provider: openai
+  model: text-embedding-3-small
+
+retriever:
+  type: hybrid
+  top_k: 5
+
+generator:
+  model: gpt-5.4-nano
