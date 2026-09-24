@@ -54,5 +54,6 @@ def call_with_retry_gemini(fn: Callable[[], T], max_retries: int = 8, base_delay
         except APIError as e:
             if e.code not in _GEMINI_RETRYABLE_CODES or attempt == max_retries:
                 raise
+            print(f"[gemini retry] code={e.code} attempt={attempt} msg={str(e)[:150]}")
             time.sleep(base_delay_s * (attempt + 1))
     raise AssertionError("unreachable")

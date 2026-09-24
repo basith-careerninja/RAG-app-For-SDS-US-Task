@@ -59,8 +59,10 @@ class NaiveRagPipeline:
             self.retriever = DenseRetriever(self.store, self.embedder)
 
     def _index_cache_key(self) -> str:
-        # changes if the filing, chunking, or embedding model change -- anything
-        # else reuses the built index instead of re-parsing/re-embedding on every start
+        # Hashing the actual source of the modules that produce the index (not a
+        # manually-bumped version number) means editing chunking/table logic or
+        # prompts always invalidates a stale cached index automatically, instead
+        # of silently serving results built with old code.
         file_hashes = sorted(hashlib.sha256(e.path.read_bytes()).hexdigest() for e in self.catalog.entries)
         parts = [
             *file_hashes,
@@ -69,6 +71,17 @@ class NaiveRagPipeline:
             str(self.chunk_overlap),
             self.embedder.model,
         ]
+        if self.chunker_type == "section_aware":
+            import sec_rag.ingest.chunking.section_aware as section_aware_module
+            import sec_rag.ingest.docling_extraction as docling_extraction_module
+            import sec_rag.ingest.tables as tables_module
+
+            for module in (section_aware_module, docling_extraction_module, tables_module):
+                parts.append(hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest())
+        else:
+            import sec_rag.ingest.chunking.fixed as fixed_module
+
+            parts.append(hashlib.sha256(Path(fixed_module.__file__).read_bytes()).hexdigest())
         return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
     def _ingest_corpus(self) -> list[str]:
@@ -98,19 +111,21 @@ class NaiveRagPipeline:
         items: list[tuple[str, str, str, str, int, int]] = []
 
         for entry in self.catalog.entries:
-            doc = parse_pdf(entry.path, doc_id=entry.doc_id)
-
             if self.chunker_type == "section_aware":
-                for chunk in chunk_document_by_section(doc, max_tokens=self.chunk_size):
-                    items.append((chunk.chunk_id, chunk.text, chunk.text, chunk.doc_id, chunk.page_start, chunk.page_end))
+                # lazy imports: pull in docling/torch only when the index cache misses
+                from sec_rag.ingest.docling_extraction import extract_docling
+                from sec_rag.ingest.tables import build_table_records
 
-                from sec_rag.ingest.tables import build_table_records  # lazy: pulls in docling/torch, skip when index cache hits
+                text_items = extract_docling(entry.path).text_items
+                for chunk in chunk_document_by_section(entry.doc_id, text_items, max_tokens=self.chunk_size):
+                    items.append((chunk.chunk_id, chunk.text, chunk.text, chunk.doc_id, chunk.page_start, chunk.page_end))
 
                 table_records, _failures = build_table_records(entry.path)
                 for i, rec in enumerate(table_records):
                     chunk_id = f"{entry.doc_id}::table_p{rec.page_no}_{i}"
                     items.append((chunk_id, rec.summary, rec.docling_markdown, entry.doc_id, rec.page_no, rec.page_no))
             else:
+                doc = parse_pdf(entry.path, doc_id=entry.doc_id)
                 for chunk in chunk_document(doc, size=self.chunk_size, overlap=self.chunk_overlap):
                     items.append((chunk.chunk_id, chunk.text, chunk.text, chunk.doc_id, chunk.page_start, chunk.page_end))
 

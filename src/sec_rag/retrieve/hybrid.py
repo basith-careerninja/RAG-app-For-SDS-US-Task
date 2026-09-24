@@ -7,6 +7,7 @@ comparable scales.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from rank_bm25 import BM25Okapi
@@ -15,6 +16,15 @@ from sec_rag.index.embedders.openai_embedder import OpenAIEmbedder
 from sec_rag.index.stores.inmemory import InMemoryVectorStore
 
 RRF_K = 60  # standard RRF constant
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    # plain .lower().split() leaves punctuation stuck to tokens ("2022?", "25,"),
+    # which means a query mentioning a date almost never matches the same date
+    # in a chunk -- extracting bare word/number tokens fixes that
+    return _WORD_RE.findall(text.lower())
 
 
 @dataclass
@@ -35,7 +45,7 @@ class HybridRetriever:
         self.store = store
         self.embedder = embedder
         self.search_texts = search_texts
-        self._bm25 = BM25Okapi([t.lower().split() for t in search_texts]) if search_texts else None
+        self._bm25 = BM25Okapi([_tokenize(t) for t in search_texts]) if search_texts else None
 
     def retrieve(self, query: str, top_k: int = 5) -> list[RetrievedChunk]:
         n = len(self.store.ids)
@@ -46,7 +56,7 @@ class HybridRetriever:
         dense_hits = self.store.search(query_vector, top_k=n)  # full ranking
         dense_rank = {chunk_id: rank for rank, (chunk_id, _score, _meta) in enumerate(dense_hits, start=1)}
 
-        bm25_scores = self._bm25.get_scores(query.lower().split())
+        bm25_scores = self._bm25.get_scores(_tokenize(query))
         bm25_ranked_ids = [self.store.ids[i] for i in sorted(range(n), key=lambda i: -bm25_scores[i])]
         bm25_rank = {chunk_id: rank for rank, chunk_id in enumerate(bm25_ranked_ids, start=1)}
 
