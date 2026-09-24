@@ -24,8 +24,6 @@ def chunk_document(doc: ParsedDocument, size: int = 512, overlap: int = 50) -> l
     if overlap >= size:
         raise ValueError("overlap must be smaller than size")
 
-    # Flatten to a (token_id, page_number) sequence so each window can report
-    # the pages it spans.
     flat_tokens: list[int] = []
     flat_pages: list[int] = []
     for page in doc.pages:

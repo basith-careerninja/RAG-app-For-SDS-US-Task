@@ -9,7 +9,7 @@ from sec_rag.config import get_settings
 from sec_rag.openai_utils import call_with_retry
 
 DEFAULT_MODEL = "text-embedding-3-small"
-BATCH_SIZE = 100  # texts per API call, to avoid one HTTP round trip per chunk
+BATCH_SIZE = 100
 
 
 class OpenAIEmbedder:
@@ -31,7 +31,6 @@ class OpenAIEmbedder:
         return cached_call(f"embeddings/{self.model}", text, _call)
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
-        # batch cache-miss texts into fewer API calls instead of one request per chunk
         namespace = f"embeddings/{self.model}"
         results: list[list[float] | None] = [None] * len(texts)
         misses: list[tuple[int, str]] = []
@@ -51,4 +50,4 @@ class OpenAIEmbedder:
                 results[idx] = item.embedding
                 cache_set(namespace, text, item.embedding)
 
-        return results  # type: ignore[return-value]
+        return results

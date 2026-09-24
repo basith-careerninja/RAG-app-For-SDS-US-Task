@@ -19,7 +19,7 @@ class InMemoryVectorStore:
         self.ids.append(id_)
         self.vectors.append(vector)
         self.metadata.append(metadata)
-        self._matrix = None  # invalidate cache
+        self._matrix = None
 
     def _matrix_view(self) -> np.ndarray:
         if self._matrix is None:

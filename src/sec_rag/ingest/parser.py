@@ -10,7 +10,7 @@ import pymupdf
 
 @dataclass(frozen=True)
 class Page:
-    page_number: int  # 1-indexed
+    page_number: int
     text: str
     has_text_layer: bool
 

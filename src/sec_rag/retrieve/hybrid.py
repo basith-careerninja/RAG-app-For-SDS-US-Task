@@ -20,7 +20,7 @@ RRF_K = 60  # standard RRF constant
 @dataclass
 class RetrievedChunk:
     chunk_id: str
-    text: str  # what gets passed to the generator -- the full parent content, not necessarily what matched
+    text: str
     score: float
     doc_id: str
     page_start: int

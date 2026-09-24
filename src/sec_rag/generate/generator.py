@@ -28,7 +28,7 @@ _ENCODING = tiktoken.get_encoding("cl100k_base")
 
 @dataclass
 class ContextItem:
-    label: str  # e.g. "2022 Q3 AAPL.pdf, p.12"
+    label: str
     text: str
 
 

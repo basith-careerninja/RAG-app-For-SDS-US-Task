@@ -48,13 +48,13 @@ class TableRecord:
     page_no: int
     docling_markdown: str
     gemini_markdown: str
-    agreement: float  # fraction of docling's numbers also found in gemini's transcription
+    agreement: float
     summary: str
 
 
 def _extract_docling_tables_uncached(pdf_path: Path) -> list[dict]:
     opts = PdfPipelineOptions()
-    opts.do_ocr = False  # this filing has a real text layer; OCR is unnecessary and slow
+    opts.do_ocr = False
     opts.do_table_structure = True
     opts.do_picture_classification = False
     opts.do_picture_description = False
@@ -73,7 +73,6 @@ def _extract_docling_tables_uncached(pdf_path: Path) -> list[dict]:
 
 
 def extract_docling_tables(pdf_path: Path) -> list[DoclingTable]:
-    # Docling's layout model is slow; cache by file hash so it only runs once per PDF.
     file_hash = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
     raw = cached_call("docling_tables", file_hash, lambda: _extract_docling_tables_uncached(pdf_path))
     return [DoclingTable(**t) for t in raw]
@@ -83,7 +82,6 @@ _gemini_client_instance: genai.Client | None = None
 
 
 def _gemini_client() -> genai.Client:
-    # a fresh Client() per call can get garbage-collected mid-request; reuse one
     global _gemini_client_instance
     if _gemini_client_instance is None:
         _gemini_client_instance = genai.Client(api_key=get_settings().gemini_api_key)
@@ -136,7 +134,7 @@ def cross_check_agreement(docling_markdown: str, gemini_markdown: str) -> float:
 
 
 def build_table_records(pdf_path: Path) -> tuple[list[TableRecord], list[tuple[int, str]]]:
-    """Returns (records, failures). A failure on one table doesn't lose the rest of the batch."""
+    """Returns (records, failures). One table failure doesn't lose the rest."""
     docling_tables = extract_docling_tables(pdf_path)
     records = []
     failures: list[tuple[int, str]] = []

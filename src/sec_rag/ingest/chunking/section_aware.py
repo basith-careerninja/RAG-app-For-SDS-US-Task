@@ -23,9 +23,7 @@ _HEADING_PATTERNS = [
     re.compile(r"^Note\s+\d+\s*[–—-]"),
 ]
 
-_MAX_HEADING_LEN = 150  # a real "Item N." line is short; a mid-paragraph reference like
-# "Item 1A of the Company's Annual Report on Form 10-K..." is not, and shouldn't match
-
+_MAX_HEADING_LEN = 150  
 
 def is_heading(line: str) -> bool:
     line = line.strip()
