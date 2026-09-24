@@ -1,6 +1,4 @@
-# AAPL 10-Q RAG
-
-A retrieval-augmented question-answering system over Apple's Q3 FY2022 10-Q filing. Answers questions about the filing's text and tables, with page citations.
+# RAG Task
 
 ## Setup
 
@@ -41,21 +39,17 @@ curl -X POST http://127.0.0.1:8000/api/query \
 
 ## How it works
 
-**Parsing.** Text pages go through PyMuPDF. Tables are handled separately: [Docling](https://github.com/docling-project/docling) extracts table structure, and Gemini 3.1 Flash-Lite independently transcribes the same page image to markdown as a cross-check — the two extractions are compared number-by-number, and any page where they disagree gets flagged instead of silently trusted. On this filing, all 31 tables across 21 table-bearing pages matched at 100% agreement.
+**Parsing.** [Docling](https://github.com/docling-project/docling) parses the filing once and is the source of truth for both text structure and tables: its layout model classifies every text block (section header, body text, list item, page header/footer, ...) using actual visual layout, not keyword matching, and separately extracts table structure. PyMuPDF is only used for the fixed-token baseline chunker and for rendering page images for the table cross-check below.
 
-**Chunking.** Text is split by the filing's own section headings (Item/Note/Part, financial statement titles) rather than blind fixed-size windows, so a paragraph never gets cut in half and separated from the sentence that answers a question. Oversized sections are split further by packing whole lines up to a token budget.
+**Tables.** Gemini 3.1 Flash-Lite independently transcribes each table page's image to markdown as a cross-check against Docling's structural extraction — the two are compared number-by-number, and any page where they disagree gets flagged instead of silently trusted. On this filing, all 31 tables across 21 table-bearing pages matched at 100% agreement.
+
+**Chunking.** Text is split on Docling's own section-header classification (Item/Note/Part boundaries, financial statement titles, and finer subsections like individual product lines) rather than blind fixed-size windows or regex guessing, so a paragraph never gets cut in half and separated from the sentence that answers a question. An earlier regex-based version of this had a real bug — a plain sentence that happened to start with "Item 1A of the Company's..." got misread as a heading — which Docling's layout-based classification doesn't make, since it looks at how the text is actually laid out on the page, not just its wording. Oversized sections are split further by packing whole lines up to a token budget.
 
 **Tables.** Each table is stored two ways: a short LLM-written summary (what gets embedded and searched against) and the full markdown table (what actually gets passed to the model once that summary is retrieved). This keeps the search index small while still giving the model the complete table when it matters.
 
 **Retrieval.** Hybrid dense (OpenAI embeddings, cosine similarity) + BM25, combined by Reciprocal Rank Fusion.
 
 **Generation.** A single prompt with the retrieved excerpts, instructed to cite `(SOURCE: filing, p.N)` for every claim and to say so explicitly rather than guess when the excerpts don't cover the question.
-
-## Assumptions and limitations
-
-- Scoped to one document by design, not a general-purpose ingestion pipeline. Ingestion logic (heading regexes, table handling) is tuned for this filing's structure and SEC 10-Q conventions generally, not arbitrary PDFs.
-- This filing has no real figures or charts (its only embedded image is a small logo), so figure/chart question-answering isn't exercised here.
-- No containerization yet — runs directly with `uvicorn`.
 
 ## Project layout
 
