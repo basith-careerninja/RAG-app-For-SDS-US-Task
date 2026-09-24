@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Protocol
 
+from sec_rag.cache import MISSING, cache_get, cache_set
 from sec_rag.doc_catalog import DocCatalog
 from sec_rag.generate.generator import ContextItem, Generator
 from sec_rag.index.embedders.openai_embedder import OpenAIEmbedder
@@ -12,7 +14,6 @@ from sec_rag.index.stores.inmemory import InMemoryVectorStore
 from sec_rag.ingest.chunking.fixed import chunk_document
 from sec_rag.ingest.chunking.section_aware import chunk_document_by_section
 from sec_rag.ingest.parser import parse_pdf
-from sec_rag.ingest.tables import build_table_records
 from sec_rag.retrieve.dense import DenseRetriever
 from sec_rag.retrieve.hybrid import HybridRetriever
 
@@ -57,7 +58,41 @@ class NaiveRagPipeline:
         else:
             self.retriever = DenseRetriever(self.store, self.embedder)
 
+    def _index_cache_key(self) -> str:
+        # changes if the filing, chunking, or embedding model change -- anything
+        # else reuses the built index instead of re-parsing/re-embedding on every start
+        file_hashes = sorted(hashlib.sha256(e.path.read_bytes()).hexdigest() for e in self.catalog.entries)
+        parts = [
+            *file_hashes,
+            self.chunker_type,
+            str(self.chunk_size),
+            str(self.chunk_overlap),
+            self.embedder.model,
+        ]
+        return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
     def _ingest_corpus(self) -> list[str]:
+        cache_key = self._index_cache_key()
+        cached = cache_get("pipeline_index", cache_key)
+        if cached is not MISSING:
+            for chunk_id, vector, metadata in cached["entries"]:
+                self.store.add(chunk_id, vector, metadata)
+            return cached["search_texts"]
+
+        items = self._build_items()
+        search_texts = [item[1] for item in items]
+        vectors = self.embedder.embed_many(search_texts)
+
+        entries = []
+        for (chunk_id, _search_text, context_text, doc_id, page_start, page_end), vector in zip(items, vectors):
+            metadata = {"text": context_text, "doc_id": doc_id, "page_start": page_start, "page_end": page_end}
+            self.store.add(chunk_id, vector, metadata)
+            entries.append((chunk_id, vector, metadata))
+
+        cache_set("pipeline_index", cache_key, {"entries": entries, "search_texts": search_texts})
+        return search_texts
+
+    def _build_items(self) -> list[tuple[str, str, str, str, int, int]]:
         # search_text is what gets embedded/indexed; context_text is what's
         # handed to the generator -- they only differ for table chunks
         items: list[tuple[str, str, str, str, int, int]] = []
@@ -69,6 +104,8 @@ class NaiveRagPipeline:
                 for chunk in chunk_document_by_section(doc, max_tokens=self.chunk_size):
                     items.append((chunk.chunk_id, chunk.text, chunk.text, chunk.doc_id, chunk.page_start, chunk.page_end))
 
+                from sec_rag.ingest.tables import build_table_records  # lazy: pulls in docling/torch, skip when index cache hits
+
                 table_records, _failures = build_table_records(entry.path)
                 for i, rec in enumerate(table_records):
                     chunk_id = f"{entry.doc_id}::table_p{rec.page_no}_{i}"
@@ -77,12 +114,7 @@ class NaiveRagPipeline:
                 for chunk in chunk_document(doc, size=self.chunk_size, overlap=self.chunk_overlap):
                     items.append((chunk.chunk_id, chunk.text, chunk.text, chunk.doc_id, chunk.page_start, chunk.page_end))
 
-        search_texts = [item[1] for item in items]
-        vectors = self.embedder.embed_many(search_texts)
-        for (chunk_id, _search_text, context_text, doc_id, page_start, page_end), vector in zip(items, vectors):
-            self.store.add(chunk_id, vector, {"text": context_text, "doc_id": doc_id, "page_start": page_start, "page_end": page_end})
-
-        return search_texts
+        return items
 
     def answer(self, question: str, doc_ids: list[str]):
         retrieved = self.retriever.retrieve(question, top_k=self.top_k)
